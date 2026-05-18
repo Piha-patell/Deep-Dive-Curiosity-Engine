@@ -44,7 +44,7 @@ export type DeepDiveResult = {
     title: string;
     author?: string;
     thumbnail?: string;
-    extractedBy: "apify" | "demo";
+    extractedBy: "apify" | "youtube-transcript" | "demo";
     durationSeconds?: number;
     transcriptPreview: string;
   };

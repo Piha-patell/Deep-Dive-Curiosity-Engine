@@ -1,6 +1,7 @@
 import { ApifyClient } from "apify-client";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { fetchTranscript } from "youtube-transcript";
 import type { ContentType, DeepDiveResource, DeepDiveResult } from "@/lib/deepdive";
 
 export const runtime = "nodejs";
@@ -17,7 +18,7 @@ type ExtractedContent = {
   thumbnail?: string;
   durationSeconds?: number;
   transcript: string;
-  extractedBy: "apify" | "demo";
+  extractedBy: "apify" | "youtube-transcript" | "demo";
 };
 
 const DEMO_TRANSCRIPT = `This video explores how curiosity becomes a system: beginning with a simple claim, identifying prerequisite knowledge, comparing competing explanations, and following source trails until the topic turns into a map. It argues that passive consumption hides the structure of ideas, while active exploration makes assumptions, origins, evidence, and adjacent questions visible. The speaker uses examples from AI research, internet culture, media literacy, and learning science to show how a viewer can move from "what did I just watch?" to "what should I understand next?"`;
@@ -81,12 +82,45 @@ async function extractYouTube(url: string): Promise<ExtractedContent> {
   const cachedTranscript = getCachedValue(TRANSCRIPT_CACHE, cacheKey);
   if (cachedTranscript) return cachedTranscript;
 
+  let apifyError: unknown = null;
+
+  if (process.env.APIFY_TOKEN) {
+    try {
+      const extracted = await extractYouTubeWithApify(url);
+      setCachedValue(TRANSCRIPT_CACHE, cacheKey, extracted);
+      return extracted;
+    } catch (error) {
+      apifyError = error;
+      console.error("Apify transcript extraction failed, trying fallback extractor.", error);
+    }
+  }
+
+  try {
+    const fallback = await extractYouTubeWithFallback(url);
+    setCachedValue(TRANSCRIPT_CACHE, cacheKey, fallback);
+    return fallback;
+  } catch (fallbackError) {
+    console.error("Fallback transcript extraction failed.", fallbackError);
+
+    if (apifyError instanceof Error) {
+      throw apifyError;
+    }
+
+    if (fallbackError instanceof Error) {
+      throw fallbackError;
+    }
+  }
+
   if (!process.env.APIFY_TOKEN) {
     const demo = demoExtraction(url);
     setCachedValue(TRANSCRIPT_CACHE, cacheKey, demo);
     return demo;
   }
 
+  throw new Error("No transcript extractor succeeded for this video.");
+}
+
+async function extractYouTubeWithApify(url: string): Promise<ExtractedContent> {
   const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
   const actorId = process.env.APIFY_YOUTUBE_ACTOR_ID || "harvestlab/youtube-scraper";
   const input = buildApifyInput(url);
@@ -121,8 +155,69 @@ async function extractYouTube(url: string): Promise<ExtractedContent> {
     extractedBy: "apify",
   };
 
-  setCachedValue(TRANSCRIPT_CACHE, cacheKey, extracted);
   return extracted;
+}
+
+async function extractYouTubeWithFallback(url: string): Promise<ExtractedContent> {
+  const transcriptLanguages = (process.env.APIFY_TRANSCRIPT_LANGUAGES || "en,en-US")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const preferredLanguage = transcriptLanguages[0];
+  const transcriptItems = await withRetry(
+    () => fetchTranscript(url, preferredLanguage ? { lang: preferredLanguage } : undefined),
+    "The YouTube transcript fallback is rate limited right now.",
+  );
+
+  if (!transcriptItems.length) {
+    throw new Error("The fallback extractor did not return any transcript segments.");
+  }
+
+  const metadata = await fetchYouTubeOEmbed(url);
+  const transcript = transcriptItems.map((item) => item.text.trim()).filter(Boolean).join(" ");
+
+  if (!transcript) {
+    throw new Error("The fallback extractor returned an empty transcript.");
+  }
+
+  return {
+    url,
+    contentType: "youtube",
+    title: metadata.title || "Untitled YouTube video",
+    author: metadata.author,
+    thumbnail: metadata.thumbnail,
+    durationSeconds: undefined,
+    transcript,
+    extractedBy: "youtube-transcript",
+  };
+}
+
+async function fetchYouTubeOEmbed(url: string) {
+  const response = await fetch(
+    `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
+    {
+      headers: {
+        "User-Agent": "DeepDiveBot/1.0",
+      },
+      next: { revalidate: 60 * 60 * 24 },
+    },
+  );
+
+  if (!response.ok) {
+    return { title: "", author: "", thumbnail: "" };
+  }
+
+  const data = (await response.json()) as {
+    title?: string;
+    author_name?: string;
+    thumbnail_url?: string;
+  };
+
+  return {
+    title: data.title?.trim() || "",
+    author: data.author_name?.trim() || "",
+    thumbnail: data.thumbnail_url?.trim() || "",
+  };
 }
 
 function buildApifyInput(url: string) {
@@ -159,6 +254,18 @@ function friendlyErrorMessage(message: string) {
 
   if (normalized.includes("did not return a transcript")) {
     return "That video does not appear to have a usable transcript right now, so DeepDive cannot analyze it yet.";
+  }
+
+  if (
+    normalized.includes("fallback extractor did not return any transcript") ||
+    normalized.includes("fallback extractor returned an empty transcript") ||
+    normalized.includes("transcript is disabled")
+  ) {
+    return "This video is available, but its transcript could not be extracted right now. Try another video or retry in a few minutes.";
+  }
+
+  if (normalized.includes("video unavailable")) {
+    return "That YouTube video is unavailable, private, or blocked from transcript retrieval.";
   }
 
   if (normalized.includes("fetch failed") || normalized.includes("network")) {
