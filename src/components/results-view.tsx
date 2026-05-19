@@ -377,7 +377,7 @@ export function ResultsView({
                     className="group min-w-[300px] max-w-[340px] snap-start rounded-[26px] border border-white/10 bg-black/20 p-5 transition hover:border-cyan-300/30 hover:bg-cyan-300/[0.05]"
                   >
                     <div className="flex items-start justify-between gap-4">
-                      <NodeTypePill type={resourceTypeToNodeType(resource.type)} />
+                      <ResourceTypePill type={resource.type} />
                       <ExternalLink className="mt-1 h-4 w-4 shrink-0 text-slate-500 transition group-hover:text-cyan-200" />
                     </div>
                     <p className="mt-4 text-lg font-medium text-white">{resource.title}</p>
@@ -599,6 +599,28 @@ function NodeTypePill({ type }: { type: DeepDiveNode["type"] }) {
   );
 }
 
+function ResourceTypePill({ type }: { type: DeepDiveResource["type"] }) {
+  const styles =
+    type === "video"
+      ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-100"
+      : type === "paper"
+        ? "border-violet-300/30 bg-violet-300/10 text-violet-100"
+        : type === "explainer"
+          ? "border-amber-300/30 bg-amber-300/10 text-amber-100"
+          : "border-emerald-300/30 bg-emerald-300/10 text-emerald-100";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em]",
+        styles,
+      )}
+    >
+      {labelForResourceType(type)}
+    </span>
+  );
+}
+
 function DetailBlock({
   label,
   value,
@@ -789,6 +811,13 @@ function formatDuration(durationSeconds: number) {
 
 function labelForContentType(contentType: DeepDiveResult["source"]["contentType"]) {
   return contentType === "youtube" ? "YouTube video" : "Web page";
+}
+
+function labelForResourceType(type: DeepDiveResource["type"]) {
+  if (type === "video") return "Video";
+  if (type === "paper") return "Paper";
+  if (type === "explainer") return "Explainer";
+  return "Article";
 }
 
 function labelForNodeType(type: DeepDiveNode["type"]) {

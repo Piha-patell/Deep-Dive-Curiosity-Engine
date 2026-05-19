@@ -801,25 +801,78 @@ async function finalizeRecommendations(
     }
   }
 
-  return pickBalancedRecommendations(merged);
+  return pickBalancedRecommendations(merged, content);
 }
 
-function pickBalancedRecommendations(recommendations: DeepDiveResult["recommendations"]) {
-  const watch = recommendations.filter((resource) => resource.type === "video");
-  const read = recommendations.filter((resource) => resource.type !== "video");
+function pickBalancedRecommendations(
+  recommendations: DeepDiveResult["recommendations"],
+  content: ExtractedContent,
+) {
+  const ordered = [...recommendations].sort(
+    (left, right) => recommendationPriority(right, content) - recommendationPriority(left, content),
+  );
+  const watch = ordered.filter((resource) => resource.type === "video");
+  const read = ordered.filter((resource) => resource.type !== "video");
   const chosen: DeepDiveResult["recommendations"] = [];
 
-  if (watch.length) chosen.push(watch[0]);
-  if (read.length) chosen.push(read[0]);
-
-  for (const resource of recommendations) {
-    if (chosen.length >= 3) break;
+  for (const resource of watch) {
+    if (chosen.filter((item) => item.type === "video").length >= 3) break;
     if (!chosen.some((item) => item.url === resource.url || item.title === resource.title)) {
       chosen.push(resource);
     }
   }
 
-  return chosen.slice(0, 3);
+  for (const resource of read) {
+    if (chosen.filter((item) => item.type !== "video").length >= 3) break;
+    if (!chosen.some((item) => item.url === resource.url || item.title === resource.title)) {
+      chosen.push(resource);
+    }
+  }
+
+  for (const resource of ordered) {
+    if (chosen.length >= 6) break;
+    if (!chosen.some((item) => item.url === resource.url || item.title === resource.title)) {
+      chosen.push(resource);
+    }
+  }
+
+  return chosen.slice(0, 6);
+}
+
+function recommendationPriority(
+  resource: DeepDiveResult["recommendations"][number],
+  content: ExtractedContent,
+) {
+  let score = 0;
+  const normalizedTitle = content.title.toLowerCase();
+  const resourceTitle = resource.title.toLowerCase();
+  const resourceWhy = resource.why.toLowerCase();
+
+  if (resourceTitle.includes(normalizedTitle) || normalizedTitle.includes(resourceTitle)) {
+    score += 8;
+  }
+
+  const titleTokens = normalizedTitle.split(/[^a-z0-9]+/).filter((token) => token.length > 3);
+  const overlap = titleTokens.filter(
+    (token) => resourceTitle.includes(token) || resourceWhy.includes(token),
+  ).length;
+  score += overlap;
+
+  if (resource.type === "explainer") score += 3;
+  if (resource.type === "paper") score += 2;
+
+  try {
+    if (resource.url) {
+      const hostname = new URL(resource.url).hostname.toLowerCase();
+      if (["ted.com", "www.ted.com", "ed.ted.com", "hbr.org", "www.mindtools.com"].includes(hostname)) {
+        score += 2;
+      }
+    }
+  } catch {
+    return score;
+  }
+
+  return score;
 }
 
 async function verifyRecommendationUrl(resource: DeepDiveResult["recommendations"][number]) {
@@ -905,36 +958,44 @@ function buildCuratedFallbackRecommendations(
 
   if (haystack.includes("motivat") || haystack.includes("stuck") || haystack.includes("goal")) {
     add({
-      title: "TED-Ed YouTube Channel",
+      title: "Why you feel stuck — and how to get motivated",
       type: "video",
-      why: "A reliable watch path if you want more short, well-produced explainers in the same educational style.",
+      why: "The official TED-Ed video for the exact idea DeepDive is unpacking, so you can revisit the source directly.",
       difficulty: "Beginner Friendly",
-      query: "TED-Ed YouTube channel motivation",
-      url: "https://www.youtube.com/@TEDEd",
+      query: "TED-Ed why you feel stuck and how to get motivated video",
+      url: "https://www.ted.com/talks/shannon_odell_why_you_feel_stuck_and_how_to_get_motivated",
     });
     add({
-      title: "TED YouTube Channel",
+      title: "Grit: The power of passion and perseverance",
       type: "video",
-      why: "A strong next watch source for adjacent motivation, psychology, and self-direction talks.",
+      why: "A strong next watch if you want the motivation conversation to move from feeling stuck into long-term persistence.",
       difficulty: "Beginner Friendly",
-      query: "TED YouTube channel motivation talks",
-      url: "https://www.youtube.com/@TED",
+      query: "Angela Lee Duckworth grit TED talk",
+      url: "https://www.ted.com/talks/angela_lee_duckworth_grit_the_power_of_passion_and_perseverance",
+    });
+    add({
+      title: "The happy secret to better work",
+      type: "video",
+      why: "Useful if you want a more positive-psychology angle on motivation, momentum, and energy at work.",
+      difficulty: "Beginner Friendly",
+      query: "Shawn Achor happy secret to better work TED talk",
+      url: "https://www.ted.com/talks/shawn_achor_the_happy_secret_to_better_work",
     });
     add({
       title: "Why you feel stuck — and how to get motivated",
       type: "explainer",
-      why: "The official TED-Ed lesson page for the exact talk, with a stable canonical destination instead of a repost.",
+      why: "The official TED-Ed lesson page with the cleanest reading version of the same idea, plus supporting context.",
       difficulty: "Beginner Friendly",
       query: "TED why you feel stuck and how to get motivated",
       url: "https://ed.ted.com/lessons/why-you-feel-stuck-and-how-to-get-motivated-shannon-odell",
     });
     add({
-      title: "Ideas about Motivation",
+      title: "The Power of Small Wins",
       type: "article",
-      why: "A curated TED collection that stays tightly relevant if you want adjacent talks instead of generic search results.",
-      difficulty: "Beginner Friendly",
-      query: "TED motivation topic",
-      url: "https://www.ted.com/topics/motivation",
+      why: "A practical reading follow-up on why small visible progress matters so much for sustaining motivation.",
+      difficulty: "Intermediate",
+      query: "Harvard Business Review power of small wins",
+      url: "https://hbr.org/2011/05/the-power-of-small-wins",
     });
     add({
       title: "Locke’s Goal-Setting Theory",
@@ -943,6 +1004,14 @@ function buildCuratedFallbackRecommendations(
       difficulty: "Intermediate",
       query: "Locke goal setting theory MindTools",
       url: "https://www.mindtools.com/azazlu3/lockes-goal-setting-theory/",
+    });
+    add({
+      title: "The puzzle of motivation",
+      type: "video",
+      why: "A good next watch if you want the conversation to shift from personal motivation into what actually drives behavior.",
+      difficulty: "Intermediate",
+      query: "Dan Pink the puzzle of motivation TED talk",
+      url: "https://www.ted.com/talks/dan_pink_the_puzzle_of_motivation",
     });
   }
 
