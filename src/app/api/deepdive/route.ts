@@ -1,4 +1,5 @@
 import { ApifyClient } from "apify-client";
+import { load } from "cheerio";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { fetchTranscript } from "youtube-transcript";
@@ -18,10 +19,8 @@ type ExtractedContent = {
   thumbnail?: string;
   durationSeconds?: number;
   transcript: string;
-  extractedBy: "apify" | "youtube-transcript" | "demo";
+  extractedBy: "apify" | "youtube-transcript" | "webpage" | "metadata" | "demo";
 };
-
-const DEMO_TRANSCRIPT = `This video explores how curiosity becomes a system: beginning with a simple claim, identifying prerequisite knowledge, comparing competing explanations, and following source trails until the topic turns into a map. It argues that passive consumption hides the structure of ideas, while active exploration makes assumptions, origins, evidence, and adjacent questions visible. The speaker uses examples from AI research, internet culture, media literacy, and learning science to show how a viewer can move from "what did I just watch?" to "what should I understand next?"`;
 
 export async function POST(request: Request) {
   try {
@@ -39,20 +38,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "That does not look like a valid URL." }, { status: 400 });
     }
 
-    if (!isYouTubeUrl(parsed)) {
-      return NextResponse.json(
-        { error: "The MVP supports YouTube links first. Web articles are next in the pipeline." },
-        { status: 400 },
-      );
-    }
-
     const cacheKey = getContentCacheKey(url);
     const cachedResult = getCachedValue(RESULT_CACHE, cacheKey);
     if (cachedResult) {
       return NextResponse.json(cachedResult);
     }
 
-    const extracted = await extractYouTube(url);
+    const extracted = isYouTubeUrl(parsed)
+      ? await extractYouTube(url)
+      : await extractWebpage(url);
     const result = await analyzeContent(extracted);
     setCachedValue(RESULT_CACHE, cacheKey, result);
 
@@ -65,7 +59,7 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(
-      { error: "DeepDive hit a processing snag. Try another YouTube link." },
+      { error: "DeepDive hit a processing snag with that link. Try another link or retry in a moment." },
       { status: 500 },
     );
   }
@@ -111,13 +105,9 @@ async function extractYouTube(url: string): Promise<ExtractedContent> {
     }
   }
 
-  if (!process.env.APIFY_TOKEN) {
-    const demo = demoExtraction(url);
-    setCachedValue(TRANSCRIPT_CACHE, cacheKey, demo);
-    return demo;
-  }
-
-  throw new Error("No transcript extractor succeeded for this video.");
+  const metadataFallback = await extractYouTubeMetadataFallback(url);
+  setCachedValue(TRANSCRIPT_CACHE, cacheKey, metadataFallback);
+  return metadataFallback;
 }
 
 async function extractYouTubeWithApify(url: string): Promise<ExtractedContent> {
@@ -220,6 +210,180 @@ async function fetchYouTubeOEmbed(url: string) {
   };
 }
 
+async function extractYouTubeMetadataFallback(url: string): Promise<ExtractedContent> {
+  const metadata = await fetchYouTubeOEmbed(url);
+  const parsed = new URL(url);
+  const videoId =
+    parsed.hostname === "youtu.be"
+      ? parsed.pathname.replaceAll("/", "")
+      : parsed.searchParams.get("v") || "";
+  const title = metadata.title || "Untitled YouTube video";
+  const author = metadata.author || "Unknown creator";
+  const transcript = [
+    `Title: ${title}.`,
+    `Creator: ${author}.`,
+    videoId ? `Video ID: ${videoId}.` : "",
+    "This DeepDive was created from video metadata because transcript extraction was unavailable.",
+    "Keep the analysis cautious, focus on the likely topic, and treat fine-grained claims as lower confidence.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    url,
+    contentType: "youtube",
+    title,
+    author,
+    thumbnail: metadata.thumbnail,
+    durationSeconds: undefined,
+    transcript,
+    extractedBy: "metadata",
+  };
+}
+
+async function extractWebpage(url: string): Promise<ExtractedContent> {
+  const cacheKey = getContentCacheKey(url);
+  const cachedContent = getCachedValue(TRANSCRIPT_CACHE, cacheKey);
+  if (cachedContent) return cachedContent;
+
+  let extracted: ExtractedContent;
+
+  try {
+    const response = await withRetry(
+      () =>
+        fetch(url, {
+          redirect: "follow",
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (compatible; DeepDiveBot/1.0; +https://deepdive.local)",
+            Accept:
+              "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+          },
+        }),
+      "The webpage is rate limited right now.",
+    );
+
+    if (!response.ok) {
+      throw new Error(`Webpage fetch failed with status ${response.status}.`);
+    }
+
+    const html = await response.text();
+    extracted = extractWebpageFromHtml(response.url || url, html);
+  } catch (error) {
+    console.error("Webpage extraction failed, falling back to metadata-only extraction.", error);
+    extracted = extractUrlMetadataFallback(url);
+  }
+
+  setCachedValue(TRANSCRIPT_CACHE, cacheKey, extracted);
+  return extracted;
+}
+
+function extractWebpageFromHtml(url: string, html: string): ExtractedContent {
+  const $ = load(html);
+  $("script, style, noscript, iframe, svg, form, nav, footer, header, aside").remove();
+
+  const title =
+    pickFirstText([
+      $('meta[property="og:title"]').attr("content"),
+      $('meta[name="twitter:title"]').attr("content"),
+      $("title").first().text(),
+      $("h1").first().text(),
+    ]) || "Untitled webpage";
+
+  const description = pickFirstText([
+    $('meta[name="description"]').attr("content"),
+    $('meta[property="og:description"]').attr("content"),
+    $('meta[name="twitter:description"]').attr("content"),
+  ]);
+
+  const author = pickFirstText([
+    $('meta[name="author"]').attr("content"),
+    $('meta[property="article:author"]').attr("content"),
+    $('[rel="author"]').first().text(),
+  ]);
+
+  const thumbnail = pickFirstText([
+    $('meta[property="og:image"]').attr("content"),
+    $('meta[name="twitter:image"]').attr("content"),
+  ]);
+
+  const articleRoot = $("article").first();
+  const paragraphSource = articleRoot.length ? articleRoot : $("main").first().length ? $("main").first() : $("body");
+
+  const textSegments = paragraphSource
+    .find("h1, h2, h3, p, li, blockquote")
+    .map((_, element) => normalizeWhitespace($(element).text()))
+    .get()
+    .filter((text) => text.length > 35)
+    .slice(0, 80);
+
+  const transcript = buildWebTranscript(title, description, textSegments);
+
+  if (transcript.length < 160) {
+    throw new Error("The webpage did not expose enough readable text to analyze.");
+  }
+
+  return {
+    url,
+    contentType: "webpage",
+    title,
+    author,
+    thumbnail,
+    transcript,
+    extractedBy: "webpage",
+  };
+}
+
+function buildWebTranscript(title: string, description: string, textSegments: string[]) {
+  return [title, description, ...textSegments]
+    .map((text) => normalizeWhitespace(text))
+    .filter(Boolean)
+    .join(" ")
+    .slice(0, 24000);
+}
+
+function extractUrlMetadataFallback(url: string): ExtractedContent {
+  const parsed = new URL(url);
+  const pathSegments = parsed.pathname
+    .split("/")
+    .map((segment) => decodeURIComponent(segment).replace(/[-_]+/g, " ").trim())
+    .filter(Boolean);
+  const title =
+    pathSegments[pathSegments.length - 1]
+      ?.replace(/\b\w/g, (letter) => letter.toUpperCase()) || parsed.hostname;
+  const transcript = [
+    `Title or slug: ${title}.`,
+    `Domain: ${parsed.hostname}.`,
+    pathSegments.length ? `Path context: ${pathSegments.join(" / ")}.` : "",
+    "This DeepDive used URL metadata fallback because the full page text was unavailable.",
+    "Treat the analysis as directional rather than authoritative, and use it to decide what to open next.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    url,
+    contentType: "webpage",
+    title,
+    author: parsed.hostname,
+    thumbnail: undefined,
+    transcript,
+    extractedBy: "metadata",
+  };
+}
+
+function normalizeWhitespace(value: string | undefined) {
+  return (value || "").replace(/\s+/g, " ").trim();
+}
+
+function pickFirstText(values: Array<string | undefined>) {
+  for (const value of values) {
+    const normalized = normalizeWhitespace(value);
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
 function buildApifyInput(url: string) {
   if (process.env.APIFY_ACTOR_INPUT_JSON) {
     return JSON.parse(process.env.APIFY_ACTOR_INPUT_JSON.replaceAll("{{url}}", url));
@@ -262,6 +426,14 @@ function friendlyErrorMessage(message: string) {
     normalized.includes("transcript is disabled")
   ) {
     return "This video is available, but its transcript could not be extracted right now. Try another video or retry in a few minutes.";
+  }
+
+  if (normalized.includes("did not expose enough readable text")) {
+    return "That page loaded, but it did not expose enough readable text for a useful DeepDive yet.";
+  }
+
+  if (normalized.includes("webpage fetch failed")) {
+    return "DeepDive could not read that page directly. It may block automated readers or require sign-in.";
   }
 
   if (normalized.includes("video unavailable")) {
@@ -479,6 +651,7 @@ function getContentCacheKey(url: string) {
         : parsed.searchParams.get("v");
 
     if (videoId) return `youtube:${videoId}`;
+    parsed.hash = "";
     return parsed.toString();
   } catch {
     return url;
@@ -785,19 +958,6 @@ function buildCuratedFallbackRecommendations(
   }
 
   return resources;
-}
-
-function demoExtraction(url: string): ExtractedContent {
-  return {
-    url,
-    contentType: "youtube",
-    title: "Curiosity as a System: From Passive Watching to Active Understanding",
-    author: "DeepDive Preview",
-    thumbnail: undefined,
-    durationSeconds: 320,
-    transcript: DEMO_TRANSCRIPT,
-    extractedBy: "demo",
-  };
 }
 
 function demoAnalysis(content: ExtractedContent): DeepDiveResult {
