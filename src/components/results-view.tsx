@@ -471,17 +471,24 @@ function StickyNoteCard({
       style={{ left: `${note.x}px`, top: `${note.y}px` }}
     >
       {note.minimized ? (
-        <button
-          type="button"
-          onClick={() => onChange((current) => ({ ...current, minimized: false }))}
+        <div
+          onPointerDown={startDrag}
           className={cn(
-            "pointer-events-auto flex items-center gap-2 rounded-2xl border px-3 py-2 backdrop-blur transition",
+            "pointer-events-auto flex cursor-grab items-center gap-2 rounded-2xl border px-3 py-2 backdrop-blur transition active:cursor-grabbing",
             color.className,
           )}
         >
           <NotebookPen className="h-4 w-4" />
-          <span className="text-sm font-medium">Exploration Note</span>
-        </button>
+          <span className="select-none text-sm font-medium">Exploration Note</span>
+          <button
+            type="button"
+            onClick={() => onChange((current) => ({ ...current, minimized: false }))}
+            data-note-interactive="true"
+            className="ml-1 rounded-full border border-white/10 px-2 py-1 text-xs text-current/80 transition hover:border-white/20 hover:text-current"
+          >
+            Open
+          </button>
+        </div>
       ) : (
         <div
           onPointerDown={startDrag}
