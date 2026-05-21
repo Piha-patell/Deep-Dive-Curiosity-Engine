@@ -562,22 +562,23 @@ async function analyzeContent(content: ExtractedContent): Promise<DeepDiveResult
           : undefined,
   });
 
-  const completion = await withRetry(
-    () =>
-      openai.chat.completions.create({
-    model: resolveModel(provider),
-    temperature: 0.45,
-    reasoning_effort: provider === "gemini" ? "low" : undefined,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are DeepDive, an AI curiosity engine. Return only valid JSON matching the requested shape. Focus on structured learning, context building, and next-step exploration. Be concise, concrete, and avoid hype.",
-      },
-      {
-        role: "user",
-        content: `Analyze this source as a clean guided learning experience.
+  try {
+    const completion = await withRetry(
+      () =>
+        openai.chat.completions.create({
+      model: resolveModel(provider),
+      temperature: 0.45,
+      reasoning_effort: provider === "gemini" ? "low" : undefined,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are DeepDive, an AI curiosity engine. Return only valid JSON matching the requested shape. Focus on structured learning, context building, and next-step exploration. Be concise, concrete, and avoid hype.",
+        },
+        {
+          role: "user",
+          content: `Analyze this source as a clean guided learning experience.
 
 Return JSON with this exact top-level shape:
 {
@@ -612,34 +613,40 @@ Title: ${content.title}
 Channel/author: ${content.author || "Unknown"}
 Transcript:
 ${content.transcript.slice(0, 18000)}`,
+        },
+      ],
+        }),
+      `${provider} is rate limited right now.`,
+    );
+
+    const parsed = JSON.parse(completion.choices[0]?.message.content || "{}") as Omit<
+      DeepDiveResult,
+      "source"
+    >;
+
+    const result = {
+      source: {
+        url: content.url,
+        contentType: content.contentType,
+        title: content.title,
+        author: content.author,
+        thumbnail: content.thumbnail,
+        extractedBy: content.extractedBy,
+        durationSeconds: content.durationSeconds,
+        transcriptPreview: content.transcript.slice(0, 360),
       },
-    ],
-      }),
-    `${provider} is rate limited right now.`,
-  );
+      ...parsed,
+      recommendations: await finalizeRecommendations(content, parsed),
+    };
 
-  const parsed = JSON.parse(completion.choices[0]?.message.content || "{}") as Omit<
-    DeepDiveResult,
-    "source"
-  >;
-
-  const result = {
-    source: {
-      url: content.url,
-      contentType: content.contentType,
-      title: content.title,
-      author: content.author,
-      thumbnail: content.thumbnail,
-      extractedBy: content.extractedBy,
-      durationSeconds: content.durationSeconds,
-      transcriptPreview: content.transcript.slice(0, 360),
-    },
-    ...parsed,
-    recommendations: await finalizeRecommendations(content, parsed),
-  };
-
-  setCachedValue(RESULT_CACHE, cacheKey, result);
-  return result;
+    setCachedValue(RESULT_CACHE, cacheKey, result);
+    return result;
+  } catch (error) {
+    console.error("AI analysis failed, returning fallback DeepDive.", error);
+    const fallback = buildFallbackAnalysis(content);
+    setCachedValue(RESULT_CACHE, cacheKey, fallback);
+    return fallback;
+  }
 }
 
 function getContentCacheKey(url: string) {
@@ -1027,6 +1034,162 @@ function buildCuratedFallbackRecommendations(
   }
 
   return resources;
+}
+
+function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
+  const transcriptPreview = content.transcript.slice(0, 2200);
+  const sentences = transcriptPreview
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => normalizeWhitespace(sentence))
+    .filter((sentence) => sentence.length > 30);
+  const quick =
+    sentences.slice(0, 2).join(" ") ||
+    `${content.title} is available, but DeepDive had to fall back to a lighter analysis for this source.`;
+  const whyItMatters =
+    sentences[2] ||
+    "This gives you a usable starting point and keeps the exploration moving even when the full AI analysis layer is unavailable.";
+  const keywordPhrases = extractKeywordPhrases(content);
+  const keyConcepts = keywordPhrases.slice(0, 4).map((term, index) => ({
+    term,
+    explanation:
+      sentences[index + 1] ||
+      `This idea appears central to the source and is a good branch to explore next.`,
+    importance: index < 2 ? ("core" as const) : ("supporting" as const),
+  }));
+  const prerequisites = keywordPhrases.slice(0, 3).map((topic) => ({
+    topic,
+    reason: `Understanding ${topic.toLowerCase()} will make the source easier to unpack.`,
+    startingPoint: `Start with a beginner-friendly overview of ${topic.toLowerCase()}.`,
+  }));
+  const parsedLike = {
+    summary: {
+      headline: content.title,
+      quick,
+      whyItMatters,
+      confidence: 0.45,
+    },
+    difficulty: "Intermediate" as const,
+    bestFor: ["Quick Context", "Deep Learning"] as DeepDiveResult["bestFor"],
+    keyConcepts,
+    prerequisites,
+    guidedLearningPath: [
+      {
+        step: 1,
+        topic: "Start with the surface idea",
+        explanation: oneSentence(quick),
+        difficulty: "Beginner Friendly" as const,
+      },
+      {
+        step: 2,
+        topic: "Unpack the central concepts",
+        explanation: "Use the key concepts to separate the source into smaller, clearer parts.",
+        difficulty: "Intermediate" as const,
+      },
+      {
+        step: 3,
+        topic: "Fill in missing background",
+        explanation: "Read a simple explainer for the ideas that still feel fuzzy or assumed.",
+        difficulty: "Intermediate" as const,
+      },
+      {
+        step: 4,
+        topic: "Pressure-test the framing",
+        explanation: "Look for where the source might be simplifying, omitting, or overstating its case.",
+        difficulty: "Advanced" as const,
+      },
+      {
+        step: 5,
+        topic: "Choose the next click",
+        explanation: "Open a direct resource that deepens, challenges, or contextualizes the source.",
+        difficulty: "Intermediate" as const,
+      },
+    ],
+    opposingViewpoints: [
+      {
+        viewpoint: "The source framing may be too neat",
+        argument:
+          "Without a full model-generated synthesis, it is worth checking whether the source simplifies a more complex issue.",
+        whatToCheck: "Compare the source with one skeptical or more technical perspective before drawing conclusions.",
+      },
+    ],
+    sourceContext: [
+      {
+        label: "Source title",
+        detail: content.title,
+      },
+      {
+        label: "Extraction mode",
+        detail: `DeepDive used ${content.extractedBy} to build this lighter fallback analysis.`,
+      },
+      {
+        label: "Caution",
+        detail: "This result is intentionally conservative because the full AI analysis layer was unavailable.",
+      },
+    ],
+    recommendations: [] as DeepDiveResult["recommendations"],
+    rabbitHoleMap: [
+      {
+        id: "main-topic",
+        label: content.title,
+        type: "main" as const,
+        description: oneSentence(quick),
+        depth: 0,
+        connectsTo: ["core-1", "core-2", "context-1"],
+      },
+      ...keyConcepts.slice(0, 2).map((item, index) => ({
+        id: `core-${index + 1}`,
+        label: item.term,
+        type: index === 0 ? ("related" as const) : ("deeper" as const),
+        description: oneSentence(item.explanation),
+        depth: 1,
+        connectsTo: ["main-topic"],
+      })),
+      ...(prerequisites[0]
+        ? [
+            {
+              id: "context-1",
+              label: prerequisites[0].topic,
+              type: "prerequisite" as const,
+              description: prerequisites[0].reason,
+              depth: 1,
+              connectsTo: ["main-topic"],
+            },
+          ]
+        : []),
+    ],
+  };
+
+  return {
+    source: {
+      url: content.url,
+      contentType: content.contentType,
+      title: content.title,
+      author: content.author,
+      thumbnail: content.thumbnail,
+      extractedBy: content.extractedBy,
+      durationSeconds: content.durationSeconds,
+      transcriptPreview: content.transcript.slice(0, 360),
+    },
+    ...parsedLike,
+    recommendations: buildCuratedFallbackRecommendations(content, parsedLike).slice(0, 6),
+  };
+}
+
+function extractKeywordPhrases(content: ExtractedContent) {
+  const joined = `${content.title}. ${content.transcript.slice(0, 1200)}`;
+  const phrases = joined
+    .split(/[^A-Za-z0-9]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 4 && token[0] === token[0]?.toUpperCase());
+
+  const unique = Array.from(new Set(phrases));
+  return unique.length
+    ? unique.slice(0, 6)
+    : ["Core idea", "Background context", "Next-step question"];
+}
+
+function oneSentence(text: string) {
+  return normalizeWhitespace(text.split(/(?<=[.!?])\s+/)[0] || text);
 }
 
 function demoAnalysis(content: ExtractedContent): DeepDiveResult {
