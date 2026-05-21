@@ -1037,33 +1037,30 @@ function buildCuratedFallbackRecommendations(
 }
 
 function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
-  const transcriptPreview = content.transcript.slice(0, 2200);
-  const sentences = transcriptPreview
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => normalizeWhitespace(sentence))
-    .filter((sentence) => sentence.length > 30);
-  const quick =
-    sentences.slice(0, 2).join(" ") ||
-    `${content.title} is available, but DeepDive had to fall back to a lighter analysis for this source.`;
-  const whyItMatters =
-    sentences[2] ||
-    "This gives you a usable starting point and keeps the exploration moving even when the full AI analysis layer is unavailable.";
+  const cleanedTitle = cleanFallbackTitle(content.title);
+  const transcriptPreview = cleanTranscriptPreview(content.transcript);
+  const topicLens = inferFallbackLens(content);
   const keywordPhrases = extractKeywordPhrases(content);
+  const quick = `${cleanedTitle} is best used as a doorway into ${topicLens.coreTheme.toLowerCase()}, not as something to replay line by line. This lighter DeepDive trims away transcript repetition and focuses on the main idea, the mindset underneath it, and the best branches to explore next.`;
+  const whyItMatters =
+    "The value here is not the original phrasing. It is the chance to turn one source into a better question, a broader context, and a more intentional next click.";
   const keyConcepts = keywordPhrases.slice(0, 4).map((term, index) => ({
     term,
-    explanation:
-      sentences[index + 1] ||
-      `This idea appears central to the source and is a good branch to explore next.`,
+    explanation: fallbackConceptExplanation(term, topicLens, index),
     importance: index < 2 ? ("core" as const) : ("supporting" as const),
   }));
-  const prerequisites = keywordPhrases.slice(0, 3).map((topic) => ({
+  const prerequisites = [
+    topicLens.prerequisiteTheme,
+    topicLens.contextTheme,
+    topicLens.evidenceTheme,
+  ].map((topic) => ({
     topic,
-    reason: `Understanding ${topic.toLowerCase()} will make the source easier to unpack.`,
+    reason: `Understanding ${topic.toLowerCase()} will make this source easier to unpack without getting pulled into pure rhetoric.`,
     startingPoint: `Start with a beginner-friendly overview of ${topic.toLowerCase()}.`,
   }));
   const parsedLike = {
     summary: {
-      headline: content.title,
+      headline: cleanedTitle,
       quick,
       whyItMatters,
       confidence: 0.45,
@@ -1075,46 +1072,46 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
     guidedLearningPath: [
       {
         step: 1,
-        topic: "Start with the surface idea",
-        explanation: oneSentence(quick),
+        topic: "Start with the core idea",
+        explanation: `Anchor the dive around ${topicLens.coreTheme.toLowerCase()} instead of replaying the source itself.`,
         difficulty: "Beginner Friendly" as const,
       },
       {
         step: 2,
-        topic: "Unpack the central concepts",
-        explanation: "Use the key concepts to separate the source into smaller, clearer parts.",
+        topic: "Name the mental model",
+        explanation: `Clarify how ${topicLens.mindsetTheme.toLowerCase()} shapes the message underneath the delivery.`,
         difficulty: "Intermediate" as const,
       },
       {
         step: 3,
-        topic: "Fill in missing background",
-        explanation: "Read a simple explainer for the ideas that still feel fuzzy or assumed.",
+        topic: "Fill in the missing background",
+        explanation: `Use ${topicLens.prerequisiteTheme.toLowerCase()} and ${topicLens.contextTheme.toLowerCase()} to make the source feel grounded instead of vague.`,
         difficulty: "Intermediate" as const,
       },
       {
         step: 4,
         topic: "Pressure-test the framing",
-        explanation: "Look for where the source might be simplifying, omitting, or overstating its case.",
+        explanation: `Ask whether the source is clarifying something real or just making ${topicLens.coreTheme.toLowerCase()} sound emotionally convincing.`,
         difficulty: "Advanced" as const,
       },
       {
         step: 5,
-        topic: "Choose the next click",
-        explanation: "Open a direct resource that deepens, challenges, or contextualizes the source.",
+        topic: "Choose a better next click",
+        explanation: `Open a direct resource that deepens, challenges, or contextualizes ${topicLens.applicationTheme.toLowerCase()}.`,
         difficulty: "Intermediate" as const,
       },
     ],
     opposingViewpoints: [
       {
-        viewpoint: "The source framing may be too neat",
+        viewpoint: `${topicLens.coreTheme} can be oversimplified`,
         argument:
-          "Without a full model-generated synthesis, it is worth checking whether the source simplifies a more complex issue.",
-        whatToCheck: "Compare the source with one skeptical or more technical perspective before drawing conclusions.",
+          "Motivational and persuasive sources often compress a messy issue into a cleaner story than reality supports.",
+        whatToCheck: `Compare the source with one skeptical, more technical, or more evidence-heavy perspective before treating it as settled.`,
       },
     ],
     sourceContext: [
       {
-        label: "Source title",
+        label: "Original source title",
         detail: content.title,
       },
       {
@@ -1123,39 +1120,51 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
       },
       {
         label: "Caution",
-        detail: "This result is intentionally conservative because the full AI analysis layer was unavailable.",
+        detail: "This result is intentionally curiosity-first. It avoids transcript repetition and leans on cleaner conceptual branches while the full AI pass is unavailable.",
       },
     ],
     recommendations: [] as DeepDiveResult["recommendations"],
     rabbitHoleMap: [
       {
         id: "main-topic",
-        label: content.title,
+        label: cleanedTitle,
         type: "main" as const,
-        description: oneSentence(quick),
+        description: `Treat this source as an entry point into ${topicLens.coreTheme.toLowerCase()}, then branch outward into background, application, and counterpoints.`,
         depth: 0,
-        connectsTo: ["core-1", "core-2", "context-1"],
+        connectsTo: ["core-1", "core-2", "context-1", "deeper-1", "opposing-1"],
       },
       ...keyConcepts.slice(0, 2).map((item, index) => ({
         id: `core-${index + 1}`,
         label: item.term,
-        type: index === 0 ? ("related" as const) : ("deeper" as const),
+        type: "related" as const,
         description: oneSentence(item.explanation),
         depth: 1,
         connectsTo: ["main-topic"],
       })),
-      ...(prerequisites[0]
-        ? [
-            {
-              id: "context-1",
-              label: prerequisites[0].topic,
-              type: "prerequisite" as const,
-              description: prerequisites[0].reason,
-              depth: 1,
-              connectsTo: ["main-topic"],
-            },
-          ]
-        : []),
+      {
+        id: "context-1",
+        label: prerequisites[0].topic,
+        type: "prerequisite" as const,
+        description: prerequisites[0].reason,
+        depth: 1,
+        connectsTo: ["main-topic"],
+      },
+      {
+        id: "deeper-1",
+        label: topicLens.applicationTheme,
+        type: "deeper" as const,
+        description: "This is the practical branch where the source becomes something you can apply, test, or compare against real life.",
+        depth: 1,
+        connectsTo: ["main-topic"],
+      },
+      {
+        id: "opposing-1",
+        label: "Skeptical check",
+        type: "opposing" as const,
+        description: "A useful counter-branch asks what the source might be glossing over, dramatizing, or leaving unproven.",
+        depth: 1,
+        connectsTo: ["main-topic"],
+      },
     ],
   };
 
@@ -1163,12 +1172,12 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
     source: {
       url: content.url,
       contentType: content.contentType,
-      title: content.title,
+      title: cleanedTitle,
       author: content.author,
       thumbnail: content.thumbnail,
       extractedBy: content.extractedBy,
       durationSeconds: content.durationSeconds,
-      transcriptPreview: content.transcript.slice(0, 360),
+      transcriptPreview: transcriptPreview,
     },
     ...parsedLike,
     recommendations: buildCuratedFallbackRecommendations(content, parsedLike).slice(0, 6),
@@ -1176,20 +1185,125 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
 }
 
 function extractKeywordPhrases(content: ExtractedContent) {
-  const joined = `${content.title}. ${content.transcript.slice(0, 1200)}`;
-  const phrases = joined
-    .split(/[^A-Za-z0-9]+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length > 4 && token[0] === token[0]?.toUpperCase());
+  const title = cleanFallbackTitle(content.title);
+  const titlePhrases = title
+    .split(/[-:|]/)
+    .map((part) => normalizeWhitespace(part))
+    .filter((part) => part.length > 4 && !/^\d+\s+minutes?/i.test(part));
+  const topicLens = inferFallbackLens(content);
+  const unique = Array.from(
+    new Set([
+      ...titlePhrases,
+      topicLens.coreTheme,
+      topicLens.mindsetTheme,
+      topicLens.applicationTheme,
+      topicLens.questionTheme,
+    ]),
+  );
 
-  const unique = Array.from(new Set(phrases));
   return unique.length
     ? unique.slice(0, 6)
-    : ["Core idea", "Background context", "Next-step question"];
+    : ["Core idea", "Background context", "Practical takeaway"];
 }
 
 function oneSentence(text: string) {
   return normalizeWhitespace(text.split(/(?<=[.!?])\s+/)[0] || text);
+}
+
+function cleanFallbackTitle(title: string) {
+  const withoutBrackets = title.replace(/\[[^\]]+\]/g, " ");
+  const withoutPromo = withoutBrackets.replace(/\b(official video|must watch|you need to watch this)\b/gi, " ");
+  return normalizeWhitespace(withoutPromo) || title;
+}
+
+function cleanTranscriptPreview(transcript: string) {
+  const cleaned = normalizeWhitespace(
+    transcript
+      .replace(/\[[^\]]+\]/g, " ")
+      .replace(/\b(music|applause|laughter)\b/gi, " ")
+      .slice(0, 220),
+  );
+
+  if (!cleaned) return "";
+  return cleaned.length > 180 ? `${cleaned.slice(0, 177)}...` : cleaned;
+}
+
+function inferFallbackLens(content: ExtractedContent) {
+  const haystack = `${content.title} ${content.transcript.slice(0, 800)}`.toLowerCase();
+
+  if (haystack.includes("motivat") || haystack.includes("purpose") || haystack.includes("stuck")) {
+    return {
+      coreTheme: "Motivation",
+      mindsetTheme: "Self-direction",
+      applicationTheme: "Daily follow-through",
+      prerequisiteTheme: "Behavior change",
+      contextTheme: "Personal growth frameworks",
+      evidenceTheme: "Motivation research",
+      questionTheme: "What actually sustains momentum?",
+    };
+  }
+
+  if (haystack.includes("goal") || haystack.includes("discipline") || haystack.includes("habit")) {
+    return {
+      coreTheme: "Intentional action",
+      mindsetTheme: "Discipline",
+      applicationTheme: "Habit formation",
+      prerequisiteTheme: "Goal-setting",
+      contextTheme: "Behavioral systems",
+      evidenceTheme: "Habit research",
+      questionTheme: "What makes change stick?",
+    };
+  }
+
+  if (haystack.includes("business") || haystack.includes("career") || haystack.includes("work")) {
+    return {
+      coreTheme: "Career growth",
+      mindsetTheme: "Decision-making",
+      applicationTheme: "Practical execution",
+      prerequisiteTheme: "Workplace context",
+      contextTheme: "Professional development",
+      evidenceTheme: "Management thinking",
+      questionTheme: "What changes outcomes in practice?",
+    };
+  }
+
+  return {
+    coreTheme: "Core message",
+    mindsetTheme: "Underlying perspective",
+    applicationTheme: "Practical takeaway",
+    prerequisiteTheme: "Background context",
+    contextTheme: "Adjacent ideas",
+    evidenceTheme: "Supporting evidence",
+    questionTheme: "What is the most interesting next question?",
+  };
+}
+
+function fallbackConceptExplanation(
+  term: string,
+  lens: ReturnType<typeof inferFallbackLens>,
+  index: number,
+) {
+  if (term === lens.coreTheme) {
+    return `This is the cleanest starting branch because it captures the main idea the source appears to orbit.`;
+  }
+
+  if (term === lens.mindsetTheme) {
+    return `This branch translates the source from a single speech or article into a broader way of thinking.`;
+  }
+
+  if (term === lens.applicationTheme) {
+    return `This is where the source becomes practical, moving from message into action, routine, or decision-making.`;
+  }
+
+  if (term === lens.questionTheme) {
+    return `This is the follow-up question most likely to keep the rabbit hole moving in a useful direction.`;
+  }
+
+  if (index === 0) {
+    return `This idea looks central to the source and is worth opening before the more speculative branches.`;
+  }
+
+  return `This is a useful branch to explore once the main theme feels clear enough to challenge or extend.`;
 }
 
 function demoAnalysis(content: ExtractedContent): DeepDiveResult {
