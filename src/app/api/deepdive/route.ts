@@ -1040,7 +1040,12 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
   const cleanedTitle = cleanFallbackTitle(content.title);
   const transcriptPreview = cleanTranscriptPreview(content.transcript);
   const topicLens = inferFallbackLens(content);
-  const keywordPhrases = extractKeywordPhrases(content);
+  const keywordPhrases = [
+    topicLens.coreTheme,
+    topicLens.mindsetTheme,
+    topicLens.applicationTheme,
+    topicLens.questionTheme,
+  ];
   const quick = `${cleanedTitle} is best used as a doorway into ${topicLens.coreTheme.toLowerCase()}, not as something to replay line by line. This lighter DeepDive trims away transcript repetition and focuses on the main idea, the mindset underneath it, and the best branches to explore next.`;
   const whyItMatters =
     "The value here is not the original phrasing. It is the chance to turn one source into a better question, a broader context, and a more intentional next click.";
@@ -1133,14 +1138,22 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
         depth: 0,
         connectsTo: ["core-1", "core-2", "context-1", "deeper-1", "opposing-1"],
       },
-      ...keyConcepts.slice(0, 2).map((item, index) => ({
-        id: `core-${index + 1}`,
-        label: item.term,
+      {
+        id: "core-1",
+        label: topicLens.coreTheme,
         type: "related" as const,
-        description: oneSentence(item.explanation),
+        description: topicLens.coreDescription,
         depth: 1,
         connectsTo: ["main-topic"],
-      })),
+      },
+      {
+        id: "core-2",
+        label: topicLens.mindsetTheme,
+        type: "related" as const,
+        description: topicLens.mindsetDescription,
+        depth: 1,
+        connectsTo: ["main-topic"],
+      },
       {
         id: "context-1",
         label: prerequisites[0].topic,
@@ -1153,15 +1166,15 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
         id: "deeper-1",
         label: topicLens.applicationTheme,
         type: "deeper" as const,
-        description: "This is the practical branch where the source becomes something you can apply, test, or compare against real life.",
+        description: topicLens.applicationDescription,
         depth: 1,
         connectsTo: ["main-topic"],
       },
       {
         id: "opposing-1",
-        label: "Skeptical check",
+        label: topicLens.questionTheme,
         type: "opposing" as const,
-        description: "A useful counter-branch asks what the source might be glossing over, dramatizing, or leaving unproven.",
+        description: topicLens.questionDescription,
         depth: 1,
         connectsTo: ["main-topic"],
       },
@@ -1182,32 +1195,6 @@ function buildFallbackAnalysis(content: ExtractedContent): DeepDiveResult {
     ...parsedLike,
     recommendations: buildCuratedFallbackRecommendations(content, parsedLike).slice(0, 6),
   };
-}
-
-function extractKeywordPhrases(content: ExtractedContent) {
-  const title = cleanFallbackTitle(content.title);
-  const titlePhrases = title
-    .split(/[-:|]/)
-    .map((part) => normalizeWhitespace(part))
-    .filter((part) => part.length > 4 && !/^\d+\s+minutes?/i.test(part));
-  const topicLens = inferFallbackLens(content);
-  const unique = Array.from(
-    new Set([
-      ...titlePhrases,
-      topicLens.coreTheme,
-      topicLens.mindsetTheme,
-      topicLens.applicationTheme,
-      topicLens.questionTheme,
-    ]),
-  );
-
-  return unique.length
-    ? unique.slice(0, 6)
-    : ["Core idea", "Background context", "Practical takeaway"];
-}
-
-function oneSentence(text: string) {
-  return normalizeWhitespace(text.split(/(?<=[.!?])\s+/)[0] || text);
 }
 
 function cleanFallbackTitle(title: string) {
@@ -1233,48 +1220,64 @@ function inferFallbackLens(content: ExtractedContent) {
 
   if (haystack.includes("motivat") || haystack.includes("purpose") || haystack.includes("stuck")) {
     return {
-      coreTheme: "Motivation",
-      mindsetTheme: "Self-direction",
-      applicationTheme: "Daily follow-through",
+      coreTheme: "What actually creates motivation?",
+      coreDescription: "Use this branch to separate emotional inspiration from the deeper forces that actually get people moving.",
+      mindsetTheme: "Intention vs autopilot",
+      mindsetDescription: "This branch is about whether people act deliberately or simply drift through cues, habits, and mood.",
+      applicationTheme: "Turning motivation into routine",
+      applicationDescription: "This is the practical branch: what has to happen for a motivating message to turn into repeatable behavior tomorrow morning.",
       prerequisiteTheme: "Behavior change",
       contextTheme: "Personal growth frameworks",
       evidenceTheme: "Motivation research",
-      questionTheme: "What actually sustains momentum?",
+      questionTheme: "Why does inspiration fade so fast?",
+      questionDescription: "A good skeptical branch asks why people can feel energized in the moment and still change almost nothing afterward.",
     };
   }
 
   if (haystack.includes("goal") || haystack.includes("discipline") || haystack.includes("habit")) {
     return {
-      coreTheme: "Intentional action",
-      mindsetTheme: "Discipline",
-      applicationTheme: "Habit formation",
+      coreTheme: "What turns intention into action?",
+      coreDescription: "This branch asks what actually bridges the gap between wanting a change and doing it consistently.",
+      mindsetTheme: "Discipline vs motivation",
+      mindsetDescription: "Use this branch to compare emotional motivation with the steadier systems people rely on when motivation is low.",
+      applicationTheme: "Making the habit stick",
+      applicationDescription: "This is the execution branch: where the source becomes concrete through routines, constraints, and repetition.",
       prerequisiteTheme: "Goal-setting",
       contextTheme: "Behavioral systems",
       evidenceTheme: "Habit research",
-      questionTheme: "What makes change stick?",
+      questionTheme: "Why do good intentions collapse?",
+      questionDescription: "This counter-branch helps you look for friction, environment, and blind spots that the source may be underestimating.",
     };
   }
 
   if (haystack.includes("business") || haystack.includes("career") || haystack.includes("work")) {
     return {
-      coreTheme: "Career growth",
-      mindsetTheme: "Decision-making",
-      applicationTheme: "Practical execution",
+      coreTheme: "What actually changes outcomes at work?",
+      coreDescription: "Use this branch to identify the real lever the source thinks matters, rather than the polish of the advice.",
+      mindsetTheme: "How decisions get made",
+      mindsetDescription: "This branch is about judgment: what assumptions, tradeoffs, or incentives are shaping the advice underneath the surface.",
+      applicationTheme: "Execution in the real world",
+      applicationDescription: "This practical branch asks what would actually change in a team, role, or workflow if you applied the source seriously.",
       prerequisiteTheme: "Workplace context",
       contextTheme: "Professional development",
       evidenceTheme: "Management thinking",
-      questionTheme: "What changes outcomes in practice?",
+      questionTheme: "What is missing from the advice?",
+      questionDescription: "A useful counter-branch asks what constraints, tradeoffs, or exceptions the source leaves out.",
     };
   }
 
   return {
-    coreTheme: "Core message",
-    mindsetTheme: "Underlying perspective",
-    applicationTheme: "Practical takeaway",
+    coreTheme: "What is the core claim here?",
+    coreDescription: "Start here to name the main idea in the source before you decide whether it deserves agreement or challenge.",
+    mindsetTheme: "What perspective is driving it?",
+    mindsetDescription: "This branch is about the worldview underneath the content, not just the content itself.",
+    applicationTheme: "Where would this matter in practice?",
+    applicationDescription: "This is the practical branch where you test whether the idea survives contact with real decisions and real behavior.",
     prerequisiteTheme: "Background context",
     contextTheme: "Adjacent ideas",
     evidenceTheme: "Supporting evidence",
-    questionTheme: "What is the most interesting next question?",
+    questionTheme: "What deserves a skeptical second look?",
+    questionDescription: "This branch keeps the rabbit hole honest by asking what the source may be simplifying, overstating, or leaving unsupported.",
   };
 }
 
